@@ -15,8 +15,9 @@ app.get("/", (req, res) => {
   res.send("Bot de WhatsApp corriendo 🚀");
 });
 
-app.listen(process.env.PORT || 3000, () => {
-  console.log("Servidor web activo en Render");
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Servidor HTTP escuchando en el puerto ${PORT}`);
 });
 
 // Estado temporal para "marcar tarea"
