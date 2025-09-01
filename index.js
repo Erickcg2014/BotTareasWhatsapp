@@ -3,9 +3,20 @@ const qrcode = require("qrcode-terminal");
 const db = require("./db");
 const cron = require("node-cron");
 
+const express = require("express");
+const app = express();
+
 
 const client = new Client({
   authStrategy: new LocalAuth()
+});
+
+app.get("/", (req, res) => {
+  res.send("Bot de WhatsApp corriendo 🚀");
+});
+
+app.listen(process.env.PORT || 3000, () => {
+  console.log("Servidor web activo en Render");
 });
 
 // Estado temporal para "marcar tarea"
