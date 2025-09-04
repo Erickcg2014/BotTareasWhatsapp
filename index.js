@@ -1,72 +1,100 @@
-const { Client, LocalAuth } = require("whatsapp-web.js");
-const qrcode = require("qrcode-terminal");
-const db = require("./db");
-const cron = require("node-cron");
+const express = require('express');
+const db = require('./db');
+const cron = require('node-cron');
 
-const express = require("express");
 const app = express();
+app.use(express.json());
 
+// Configuración de WhatsApp Business API
+const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN; // Token de Meta
+const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID; // ID del número de teléfono
+const WEBHOOK_VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN; // Token de verificación
+const YOUR_PHONE_NUMBER = process.env.YOUR_PHONE_NUMBER; // Tu número (ej: "573115850689")
 
-const client = new Client({
-  authStrategy: new LocalAuth()
+// Verificación del webhook
+app.get('/webhook', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  if (mode && token === WEBHOOK_VERIFY_TOKEN) {
+    res.status(200).send(challenge);
+  } else {
+    res.status(403).send('Forbidden');
+  }
 });
 
-app.get("/", (req, res) => {
-  res.send("Bot de WhatsApp corriendo 🚀");
+// Recibir mensajes
+app.post('/webhook', (req, res) => {
+  const body = req.body;
+
+  if (body.object === 'whatsapp_business_account') {
+    body.entry.forEach(entry => {
+      const changes = entry.changes;
+      changes.forEach(change => {
+        if (change.field === 'messages') {
+          const messages = change.value.messages;
+          if (messages) {
+            messages.forEach(message => {
+              handleMessage(message, change.value.contacts[0]);
+            });
+          }
+        }
+      });
+    });
+    res.status(200).send('OK');
+  } else {
+    res.status(404).send('Not Found');
+  }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Servidor HTTP escuchando en el puerto ${PORT}`);
-});
+// Función para enviar mensajes
+async function sendMessage(to, text) {
+  const url = `https://graph.facebook.com/v17.0/${PHONE_NUMBER_ID}/messages`;
+  
+  const data = {
+    messaging_product: "whatsapp",
+    to: to,
+    type: "text",
+    text: { body: text }
+  };
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(data)
+    });
+    return await response.json();
+  } catch (error) {
+    console.error('Error enviando mensaje:', error);
+  }
+}
 
 // Estado temporal para "marcar tarea"
-let enModoMarcar = false;
+let enModoMarcar = {};
 
-client.on("qr", qr => {
-  qrcode.generate(qr, { small: true });
-});
-
-client.on("ready", () => {
-  console.log("✅ Bot de tareas listo y conectado a WhatsApp!");
-});
-
-//PROGRAMAR 8 A.M RECORDATORIOS
-// Enviar lista de tareas todos los días a las 8:00 am
-cron.schedule("0 8 * * *", () => {
-  const chatId = "573115850689@c.us";
-
-  db.all("SELECT * FROM tareas", [], (err, rows) => {
-    if (err) {
-      client.sendMessage(chatId, "⚠️ Error al consultar las tareas.");
-      return;
-    }
-    if (rows.length === 0) {
-      client.sendMessage(chatId, "📭 No tienes tareas pendientes hoy.");
-      return;
-    }
-    let respuesta = "🌞 *Buenos días!* Aquí están tus tareas pendientes:\n\n";
-    rows.forEach((r, i) => {
-      respuesta += `${i + 1}. 📌 ${r.tarea} (Entrega: ${r.fecha_entrega})\n`;
-    });
-    client.sendMessage(chatId, respuesta);
-  });
-});
-
-
-client.on("message", async msg => {
-  const text = msg.body.toLowerCase();
+// Manejar mensajes recibidos
+async function handleMessage(message, contact) {
+  const from = message.from;
+  const text = message.text?.body?.toLowerCase() || '';
+  
+  // Solo responder a tu número
+  if (from !== YOUR_PHONE_NUMBER) return;
 
   // 📌 Agregar tarea
   if (text === "agregar tarea") {
-    msg.reply("📌 Para agregar una tarea usa el formato:\n\nAgregar tarea;FECHA;TAREA;DESCRIPCION;FECHA_ENTREGA\n\nEjemplo:\nAgregar tarea;2025-09-01;Estudiar;Repasar álgebra;2025-09-05");
+    await sendMessage(from, "📌 Para agregar una tarea usa el formato:\n\nAgregar tarea;FECHA;TAREA;DESCRIPCION;FECHA_ENTREGA\n\nEjemplo:\nAgregar tarea;2025-09-01;Estudiar;Repasar álgebra;2025-09-05");
     return;
   }
 
   if (text.startsWith("agregar tarea;")) {
-    const partes = msg.body.split(";");
+    const partes = message.text.body.split(";");
     if (partes.length < 5) {
-      msg.reply("❌ Formato incorrecto.\nEjemplo:\nAgregar tarea;2025-09-01;Estudiar;Repasar álgebra;2025-09-05");
+      await sendMessage(from, "❌ Formato incorrecto.\nEjemplo:\nAgregar tarea;2025-09-01;Estudiar;Repasar álgebra;2025-09-05");
       return;
     }
     const [, fecha, tarea, descripcion, fechaEntrega] = partes;
@@ -74,9 +102,9 @@ client.on("message", async msg => {
     db.run(
       "INSERT INTO tareas (fecha, tarea, descripcion, fecha_entrega) VALUES (?, ?, ?, ?)",
       [fecha, tarea, descripcion, fechaEntrega],
-      err => {
-        if (err) msg.reply("⚠️ Error al guardar la tarea");
-        else msg.reply("✅ Tarea guardada!");
+      async (err) => {
+        if (err) await sendMessage(from, "⚠️ Error al guardar la tarea");
+        else await sendMessage(from, "✅ Tarea guardada!");
       }
     );
     return;
@@ -84,63 +112,63 @@ client.on("message", async msg => {
 
   // 📌 Listar tareas
   if (text === "listar tareas") {
-    db.all("SELECT * FROM tareas", [], (err, rows) => {
+    db.all("SELECT * FROM tareas", [], async (err, rows) => {
       if (err) {
-        msg.reply("⚠️ Error al consultar las tareas");
+        await sendMessage(from, "⚠️ Error al consultar las tareas");
         return;
       }
       if (rows.length === 0) {
-        msg.reply("📭 No tienes tareas registradas");
+        await sendMessage(from, "📭 No tienes tareas registradas");
         return;
       }
       let respuesta = "📋 *Tus tareas:*\n\n";
       rows.forEach(r => {
         respuesta += `🆔 ${r.id}\n📅 ${r.fecha}\n📌 ${r.tarea}\n📝 ${r.descripcion}\n⏳ Entrega: ${r.fecha_entrega}\n---\n`;
       });
-      msg.reply(respuesta);
+      await sendMessage(from, respuesta);
     });
     return;
   }
 
   // 📌 Marcar tarea realizada
   if (text === "marcar tarea realizada") {
-    db.all("SELECT * FROM tareas", [], (err, rows) => {
+    db.all("SELECT * FROM tareas", [], async (err, rows) => {
       if (err) {
-        msg.reply("⚠️ Error al consultar las tareas");
+        await sendMessage(from, "⚠️ Error al consultar las tareas");
         return;
       }
       if (rows.length === 0) {
-        msg.reply("📭 No tienes tareas registradas");
+        await sendMessage(from, "📭 No tienes tareas registradas");
         return;
       }
       let respuesta = "✅ *Selecciona el número de la tarea realizada:*\n\n";
       rows.forEach((r, i) => {
         respuesta += `${i + 1}. 📌 ${r.tarea} (Entrega: ${r.fecha_entrega})\n`;
       });
-      msg.reply(respuesta);
-      enModoMarcar = true;
+      await sendMessage(from, respuesta);
+      enModoMarcar[from] = true;
     });
     return;
   }
 
   // 📌 Si está en modo "marcar" y el usuario envía un número
-  if (enModoMarcar && !isNaN(text)) {
+  if (enModoMarcar[from] && !isNaN(text)) {
     const numero = parseInt(text);
-    db.all("SELECT * FROM tareas", [], (err, rows) => {
+    db.all("SELECT * FROM tareas", [], async (err, rows) => {
       if (err) {
-        msg.reply("⚠️ Error al consultar las tareas");
-        enModoMarcar = false;
+        await sendMessage(from, "⚠️ Error al consultar las tareas");
+        enModoMarcar[from] = false;
         return;
       }
       if (numero < 1 || numero > rows.length) {
-        msg.reply("❌ Número inválido, intenta de nuevo.");
+        await sendMessage(from, "❌ Número inválido, intenta de nuevo.");
         return;
       }
       const tareaSeleccionada = rows[numero - 1];
-      db.run("DELETE FROM tareas WHERE id = ?", [tareaSeleccionada.id], function (err) {
-        if (err) msg.reply("⚠️ Error al eliminar tarea");
-        else msg.reply(`🗑️ Tarea realizada y eliminada: ${tareaSeleccionada.tarea}`);
-        enModoMarcar = false;
+      db.run("DELETE FROM tareas WHERE id = ?", [tareaSeleccionada.id], async function (err) {
+        if (err) await sendMessage(from, "⚠️ Error al eliminar tarea");
+        else await sendMessage(from, `🗑️ Tarea realizada y eliminada: ${tareaSeleccionada.tarea}`);
+        enModoMarcar[from] = false;
       });
     });
     return;
@@ -148,23 +176,23 @@ client.on("message", async msg => {
 
   // 📌 Eliminar tarea por ID
   if (text.startsWith("eliminar tarea")) {
-    const partes = msg.body.split(" ");
+    const partes = message.text.body.split(" ");
     if (partes.length < 3) {
-      msg.reply("❌ Usa: Eliminar tarea ID");
+      await sendMessage(from, "❌ Usa: Eliminar tarea ID");
       return;
     }
     const id = partes[2];
-    db.run("DELETE FROM tareas WHERE id = ?", [id], function (err) {
-      if (err) msg.reply("⚠️ Error al eliminar tarea");
-      else if (this.changes === 0) msg.reply("❌ No existe esa tarea");
-      else msg.reply("🗑️ Tarea eliminada");
+    db.run("DELETE FROM tareas WHERE id = ?", [id], async function (err) {
+      if (err) await sendMessage(from, "⚠️ Error al eliminar tarea");
+      else if (this.changes === 0) await sendMessage(from, "❌ No existe esa tarea");
+      else await sendMessage(from, "🗑️ Tarea eliminada");
     });
     return;
   }
 
   // 📌 Ayuda
   if (text === "ayuda") {
-    msg.reply(
+    await sendMessage(from,
       "🤖 *Bot de Tareas*\n\n" +
       "👉 Agregar tarea (te muestra el formato)\n" +
       "👉 Agregar tarea;FECHA;TAREA;DESCRIPCION;FECHA_ENTREGA\n" +
@@ -174,6 +202,32 @@ client.on("message", async msg => {
       "👉 Ayuda"
     );
   }
+}
+
+// Programar recordatorios (8 AM)
+cron.schedule("0 8 * * *", async () => {
+  db.all("SELECT * FROM tareas", [], async (err, rows) => {
+    if (err) {
+      await sendMessage(YOUR_PHONE_NUMBER, "⚠️ Error al consultar las tareas.");
+      return;
+    }
+    if (rows.length === 0) {
+      await sendMessage(YOUR_PHONE_NUMBER, "📭 No tienes tareas pendientes hoy.");
+      return;
+    }
+    let respuesta = "🌞 *Buenos días!* Aquí están tus tareas pendientes:\n\n";
+    rows.forEach((r, i) => {
+      respuesta += `${i + 1}. 📌 ${r.tarea} (Entrega: ${r.fecha_entrega})\n`;
+    });
+    await sendMessage(YOUR_PHONE_NUMBER, respuesta);
+  });
 });
 
-client.initialize();
+app.get('/', (req, res) => {
+  res.send('Bot de WhatsApp Business API funcionando 🚀');
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Servidor escuchando en puerto ${PORT}`);
+});
