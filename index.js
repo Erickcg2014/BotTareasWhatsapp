@@ -34,7 +34,7 @@ client.on("ready", () => {
 //PROGRAMAR 8 A.M RECORDATORIOS
 // Enviar lista de tareas todos los días a las 8:00 am
 cron.schedule("0 8 * * *", () => {
-  const chatId = "573208880658@c.us";
+  const chatId = "573115850689@c.us";
 
   db.all("SELECT * FROM tareas", [], (err, rows) => {
     if (err) {
